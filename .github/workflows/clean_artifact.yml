@@ -1,0 +1,46 @@
+name: Cleanup old artifacts
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Chaque semaine
+  workflow_dispatch: # Permet de déclencher manuellement
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Get all artifacts
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+        run: |
+          gh api -X GET repos/${{ github.repository_owner }}/$(basename ${{ github.repository }})/actions/artifacts --paginate --jq '.artifacts[] | select(.expired == false) | [.id, .name, .created_at]' > artifacts.json
+
+      - name: Get latest workflow run ID
+        id: latest_run
+        env:
+          GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+        run: |
+          LATEST_RUN_ID=$(gh api -X GET repos/${{ github.repository_owner }}/$(basename ${{ github.repository }})/actions/runs --jq '.workflow_runs[0].id')
+          echo "::set-output name=id::$LATEST_RUN_ID"
+
+      - name: Delete old artifacts
+        run: |
+          LATEST_RUN_ID=${{ steps.latest_run.outputs.id }}
+          NOW=$(date +%s)
+          cat artifacts.json | jq -c '.[]' | while read i; do
+            ARTIFACT_ID=$(echo $i | jq .[0])
+            CREATED_AT=$(echo $i | jq .[2] | sed 's/\"//g')
+            CREATION_DATE=$(date -d $CREATED_AT +%s)
+            DIFF=$(( (NOW - CREATION_DATE) / 86400 ))
+            # Supprimer les artefacts plus vieux que 7 jours sauf le plus récent
+            if [ "$DIFF" -gt "7" ]; then
+              echo "Deleting artifact $ARTIFACT_ID created on $CREATED_AT"
+              gh api -X DELETE repos/${{ github.repository_owner }}/$(basename ${{ github.repository }})/actions/artifacts/$ARTIFACT_ID
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
